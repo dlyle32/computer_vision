@@ -1,0 +1,5 @@
+data*
+training_logs*
+model_plot.png
+*__pycache__*
+.idea*

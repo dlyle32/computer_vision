@@ -17,6 +17,7 @@ from tensorflow.keras.utils import plot_model
 import argparse
 
 logger = logging.getLogger("comp_vis")
+tf.compat.v1.disable_eager_execution()
 
 def main(args):
 
@@ -51,19 +52,16 @@ def main(args):
 
     model = modelBuilder.get_model()
     model = modelBuilder.compile_model(model, opt)
-    print("plotting model")
-    plot_model(model, to_file='model_plot.png', show_shapes=True, show_layer_names=True)
+    #plot_model(model, to_file='model_plot.png', show_shapes=True, show_layer_names=True)
     X,Y  = modelBuilder.get_train_data()
-    print("got training data")
-    callbacks = modelBuilder.get_callbacks()
+    callbacks = modelBuilder.get_callbacks(model)
     init_epoch = 0
-    # history = model.fit(X, Y,
-    #            batch_size=args.minibatchsize,
-    #            epochs=args.numepochs,
-    #            initial_epoch=init_epoch,
-    #            shuffle=True,
-    #            callbacks=callbacks)
-    # logger.info(history.history)
+    history = model.fit(X, Y,
+               epochs=args.numepochs,
+               steps_per_epoch=1,
+               initial_epoch=init_epoch,
+               callbacks=callbacks)
+    logger.info(history.history)
 
 
 def parse_args():

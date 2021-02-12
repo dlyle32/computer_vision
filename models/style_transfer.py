@@ -16,7 +16,7 @@ import logging
 # to an image meant to represent the style and another meant to represent the content
 
 def compute_style_matrix(G, layer):
-    op = "aijk,aijl->kl"
+    op = "aijk,aijl->akl"
     correlation_layer = EinsumOp(op, name="compute_style_%d" % layer)
     return correlation_layer([G,G])
 
@@ -45,9 +45,12 @@ def sum_square_diff(A,B):
 
 class ImageGen(keras.layers.Layer):
     def __init__(self, nh, nw, nc, **kwargs):
-        super(ImageGen,self).__init__(kwargs)
+        super(ImageGen,self).__init__(**kwargs)
+        self.nh = nh
+        self.nw = nw
+        self.nc = nc
         self.w = self.add_weight(
-            shape=(nh,nw,nc),
+            shape=(1,nh,nw,nc),
             initializer="random_normal",
             trainable=True,
         )
@@ -55,6 +58,10 @@ class ImageGen(keras.layers.Layer):
     def call(self, inputs):
         return self.w
 
+    def get_img_matrix(self): 
+        weights = self.get_weights()[0]
+        print(weights.shape)
+        return np.reshape(weights, (self.nh,self.nw,self.nc))
 
 class StyleTransferBuilder():
 
@@ -78,46 +85,30 @@ class StyleTransferBuilder():
         return self.content_factor * cl + self.style_factor * sl
 
     def get_model(self):
+        vggmodel = self.get_vgg_model()
         inpt = keras.layers.Input(shape=(1), name="input")
         img = ImageGen(self.nh, self.nw, self.nc, name="GenImage")(inpt)
-        out = self.vgg.get_layer("block1_conv1")(img[np.newaxis,:,:,:])
-        outputs = []
-        style_l = 0
-        style_out = []
-        for layer in self.vgg.layers[2:]:
-            print(layer.name)
-            out = layer(out)
-            if layer.name == self.content_layer:
-                outputs.append(out)
-            if style_l < len(self.style_layers) and layer.name == self.style_layers[style_l]:
-                style_correlation = compute_style_matrix(out, style_l)
-                style_out.append(style_correlation)
-                style_l += 1
-            layer.trainable = False
-        outputs.extend(style_out)
-        # block4_conv2 = vgg.get_layer(self.content_layer).output
-        # outputs = [block4_conv2]
-        # for i,l in enumerate(self.style_layers):
-        #     sl = vgg.get_layer(l).output
-        #     style_correlation = compute_style_matrix(sl, i)
-        #     outputs.append(style_correlation)
-        model = keras.Model(inputs=inpt, outputs=outputs)
+        out = vggmodel(img)
+        model = keras.Model(inputs=inpt, outputs=out)
         return model
 
-    def precompute_content_style_vals(self, C, S):
+    def get_vgg_model(self):
         block4_conv2 = self.vgg.get_layer(self.content_layer).output
         outputs = [block4_conv2]
         for i, l in enumerate(self.style_layers):
             sl = self.vgg.get_layer(l).output
             style_correlation = compute_style_matrix(sl, i)
             outputs.append(style_correlation)
-        print("HERE")
         model = keras.Model(inputs=self.vgg.input, outputs=outputs)
-        print("HEERE")
+        for layer in model.layers:
+            layer.trainable = False
+        return model
+
+    
+    def precompute_content_style_vals(self, C, S):
+        model = self.get_vgg_model()
         yc = model.predict(C[np.newaxis,:,:,:])[0]
-        print("HEEERE")
         ys = model.predict(S[np.newaxis,:,:,:])[1:]
-        print("HEEEERE")
         return [yc] + ys
 
     def get_train_data(self):
@@ -128,7 +119,7 @@ class StyleTransferBuilder():
         content_arr = img_to_array(content_img)
         style_arr = img_to_array(style_img)
         Y = self.precompute_content_style_vals(content_arr, style_arr)
-        return [], Y
+        return [0], Y
 
     def content_loss(self,G, C):
         return sum_square_diff(G,C)
@@ -145,13 +136,13 @@ class StyleTransferBuilder():
 
     def save_generated_img(self, model, epoch):
         imageGenLayer = model.get_layer("GenImage")
-        imageMatrix = imageGenLayer.get_weights()
+        imageMatrix = imageGenLayer.get_img_matrix()
         img = Image.fromarray(imageMatrix, 'RGB')
         img_path = os.path.join(self.datadir, "gen_image_%d.jpg" % epoch)
         img.save(img_path)
 
     def get_callbacks(self, model):
-        save_gen_img = LambdaCallback(on_epoch_end=lambda epoch, logs: self.save_gen_img(model, epoch))
+        save_gen_img = LambdaCallback(on_epoch_end=lambda epoch, logs: self.save_generated_img(model, epoch))
         return [save_gen_img]
 
 

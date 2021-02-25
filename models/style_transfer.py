@@ -7,6 +7,7 @@ from tensorflow.python.ops import special_math_ops
 from tensorflow.keras.callbacks import LambdaCallback
 import os
 from PIL import Image
+import cv2
 import numpy as np
 import logging
 
@@ -15,10 +16,17 @@ import logging
 # based on a loss function that compares the generated image
 # to an image meant to represent the style and another meant to represent the content
 
-def compute_style_matrix(G, layer):
-    op = "aijk,aijl->akl"
-    correlation_layer = EinsumOp(op, name="compute_style_%d" % layer)
+logger = logging.getLogger("comp_vis")
+def compute_style_matrix(G):
+    op = "ijk,ijl->kl"
+    correlation_layer = EinsumOp(op)
     return correlation_layer([G,G])
+
+def gram_matrix(x):
+    x = tf.transpose(x, (2, 0, 1))
+    features = tf.reshape(x, (tf.shape(x)[0], -1))
+    gram = tf.matmul(features, tf.transpose(features))
+    return gram
 
 
 class EinsumOp(keras.layers.Layer):
@@ -40,8 +48,17 @@ class EinsumOp(keras.layers.Layer):
         return config
 
 def sum_square_diff(A,B):
-    square_diff = tf.math.square(tf.math.subtract(A, B))
-    return tf.math.reduce_sum(square_diff)
+    square_diff = tf.square(A-B)
+    return tf.reduce_sum(square_diff)
+
+def add_batch_dim(A):
+    return A[np.newaxis, :, : :]
+
+def read_and_resize_img(path, nh, nw):
+    img = cv2.imread(path)
+    img = cv2.resize(img, dsize=(nw, nh), interpolation=cv2.INTER_AREA)
+    img = tf.constant(img, dtype=tf.float32)
+    return img
 
 class ImageGen(keras.layers.Layer):
     def __init__(self, nh, nw, nc, **kwargs):
@@ -60,7 +77,6 @@ class ImageGen(keras.layers.Layer):
 
     def get_img_matrix(self): 
         weights = self.get_weights()[0]
-        print(weights.shape)
         return np.reshape(weights, (self.nh,self.nw,self.nc))
 
 class StyleTransferBuilder():
@@ -69,23 +85,60 @@ class StyleTransferBuilder():
         self.content_factor = args.content_factor
         self.style_factor = args.style_factor
         self.style_layers = ["block2_conv1", "block3_conv3", "block4_conv2", "block5_conv1"]
-        self.content_layer = "block4_conv2"
+        self.content_layer = "block5_conv2"
         self.style_layer_weights = [0.25] * 4
         self.datadir = args.datadir
-        self.nh = 224
-        self.nw = 224
+        self.contentpath = args.content_img
+        self.stylepath = args.style_img
+        self.nh = 512
+        self.nw = 512
         self.nc = 3
-        self.vgg = VGG16()
+        self.vgg = VGG16(include_top=False)
 
-    def loss(self, y, y_hat):
-        C = y_hat[0]
-        S = y_hat[1:]
-        cl = self.content_loss(y[0],C)
-        sl = self.style_loss(y[1:], S)
-        return self.content_factor * cl + self.style_factor * sl
+    def loss(self, model, content_img, style_img, gen_img):
+        concat_input = tf.concat([content_img, style_img, gen_img], axis=0)
+        # model = self.get_vgg_model()
+        outs = model(concat_input)
+        content_features = outs[self.content_layer]
+        C = content_features[0, :, :, :]
+        G = content_features[2, :, :, :]
+        loss = tf.zeros(shape=())
+        loss = loss + self.content_factor * self.content_loss(C, G)
+        # cl = self.content_loss(outs)
+        for i,l in enumerate(self.style_layers):
+            feats = outs[l]
+            S = feats[1, :, :, :]
+            G = feats[2, :, :, :]
+            loss = loss + self.style_factor * self.style_layer_weights[i] * self.style_loss(S, G)
+        # sl = self.style_loss(outs)
+
+        return loss
+        # return self.content_factor * cl + self.style_factor * sl
+
+    @tf.function
+    def compute_loss_and_grads(self, content_img, style_img, gen_img):
+        outputs_dict = dict([(layer.name, layer.output) for layer in self.vgg.layers])
+        model = keras.Model(inputs=self.vgg.inputs, outputs=outputs_dict)
+        with tf.GradientTape() as tape:
+            tape.watch(gen_img)
+            loss = self.loss(model, content_img, style_img, gen_img)
+        grads = tape.gradient(loss, gen_img)
+        return loss, grads
+
+    def content_loss(self, C, G):
+        return sum_square_diff(C, G)
+
+    def style_loss(self, S, G):
+        # S = compute_style_matrix(S)
+        S = gram_matrix(S)
+        # G = compute_style_matrix(G)
+        G = gram_matrix(G)
+        return sum_square_diff(S,G)
 
     def get_model(self):
         vggmodel = self.get_vgg_model()
+        return vggmodel
+        print(vggmodel.summary())
         inpt = keras.layers.Input(shape=(1), name="input")
         img = ImageGen(self.nh, self.nw, self.nc, name="GenImage")(inpt)
         out = vggmodel(img)
@@ -94,52 +147,53 @@ class StyleTransferBuilder():
 
     def get_vgg_model(self):
         block4_conv2 = self.vgg.get_layer(self.content_layer).output
-        outputs = [block4_conv2]
+        outputs = {self.content_layer: block4_conv2}
         for i, l in enumerate(self.style_layers):
             sl = self.vgg.get_layer(l).output
-            style_correlation = compute_style_matrix(sl, i)
-            outputs.append(style_correlation)
+            # style_correlation = compute_style_matrix(sl, i)
+            # outputs.append(style_correlation)
+            outputs[l] = sl
         model = keras.Model(inputs=self.vgg.input, outputs=outputs)
         for layer in model.layers:
             layer.trainable = False
         return model
 
     
-    def precompute_content_style_vals(self, C, S):
-        model = self.get_vgg_model()
-        yc = model.predict(C[np.newaxis,:,:,:])[0]
-        ys = model.predict(S[np.newaxis,:,:,:])[1:]
-        return [yc] + ys
+    def precompute_content_style_vals(self, model, C, S):
+        concat_input = tf.concat([C,S], axis=0)
+        # yc = model(C[np.newaxis,:,:,:])
+        # ys = model(S[np.newaxis,:,:,:])
+        y = model(concat_input)
+        return y
 
     def get_train_data(self):
-        content_img_file = os.path.join(self.datadir, "content.jpg")
-        style_img_file = os.path.join(self.datadir, "style.jpg")
-        content_img = load_img(content_img_file, target_size=(self.nh,self.nw))
-        style_img = load_img(style_img_file, target_size=(self.nh,self.nw))
-        content_arr = img_to_array(content_img)
-        style_arr = img_to_array(style_img)
-        Y = self.precompute_content_style_vals(content_arr, style_arr)
-        return [0], Y
+        content_img = read_and_resize_img(self.contentpath, self.nh, self.nw)
+        style_img = read_and_resize_img(self.stylepath, self.nh, self.nw)
+        img = cv2.imread(self.contentpath)
+        img = cv2.resize(img, dsize=(self.nw, self.nh), interpolation=cv2.INTER_AREA)
+        gen_img = tf.Variable(img[np.newaxis, :,:,:], dtype=tf.float32, trainable=True)
+        # gen_img = tf.Variable(tf.random.normal((1,content_img.shape[0], content_img.shape[1], content_img.shape[2])), dtype=tf.float32, trainable=True)
+        # Y = self.precompute_content_style_vals(content_arr, style_arr)
+        content_img = add_batch_dim(content_img)
+        style_img = add_batch_dim(style_img)
+        return content_img, style_img, gen_img
 
-    def content_loss(self,G, C):
-        return sum_square_diff(G,C)
+    # def compile_model(self, model, optimizer):
+    #     model.compile(loss=lambda y,yh : self.content_loss(y,yh), optimizer=optimizer,
+    #                   metrics=["accuracy"])
+    #     return model
 
-    def style_loss(self, G, S):
-        loss = 0
-        for i in range(G.shape[0]):
-            loss += self.style_layer_weights[i] * sum_square_diff(G[i],S)
-
-    def compile_model(self, model, optimizer):
-        model.compile(loss=lambda y,yh : self.content_loss(y,yh), optimizer=optimizer,
-                      metrics=["accuracy"])
-        return model
-
-    def save_generated_img(self, model, epoch):
-        imageGenLayer = model.get_layer("GenImage")
-        imageMatrix = imageGenLayer.get_img_matrix()
-        img = Image.fromarray(imageMatrix, 'RGB')
+    def save_generated_img(self, image_matrix, epoch):
+        # imageGenLayer = model.get_layer("GenImage")
+        # image_matrix = imageGenLayer.get_img_matrix()
+        image_matrix = image_matrix[0,:,:,:]
+        # img = Image.fromarray(image_matrix, 'RGB')
         img_path = os.path.join(self.datadir, "gen_image_%d.jpg" % epoch)
-        img.save(img_path)
+        cv2.imwrite(img_path, image_matrix)
+        # img.save(os.path.join(self.datadir, "gen_image_test_%d.jpg" % epoch))
+        # imgMatrix = cv2.imread(img_path)
+        # print(imgMatrix)
+        # print(imgMatrix.shape)
 
     def get_callbacks(self, model):
         save_gen_img = LambdaCallback(on_epoch_end=lambda epoch, logs: self.save_generated_img(model, epoch))

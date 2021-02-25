@@ -17,7 +17,6 @@ from tensorflow.keras.utils import plot_model
 import argparse
 
 logger = logging.getLogger("comp_vis")
-# tf.compat.v1.disable_eager_execution()
 
 def main(args):
 
@@ -25,6 +24,9 @@ def main(args):
     logdir = os.path.join(args.volumedir, datetime.datetime.today().strftime('%Y%m%d'), args.logdir)
     if not os.path.isdir(logdir):
         os.makedirs(logdir)
+    snapdir = os.path.join(args.volumedir, datetime.datetime.today().strftime('%Y%m%d'), "progess_snaps")
+    if not os.path.isdir(snapdir):
+        os.makedirs(snapdir)
     hdlr = logging.FileHandler(os.path.join(logdir, "training_output_%d.log" % timestamp))
     formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
     hdlr.setFormatter(formatter)
@@ -50,26 +52,14 @@ def main(args):
 
     opt = optimizer(learning_rate=lr_decay, clipvalue=3)
 
-    # model = modelBuilder.get_model()
-    # # model = modelBuilder.compile_model(model, opt)
-    # plot_model(model, to_file='model_plot.png', show_shapes=True, show_layer_names=True)
-    # print(model.summary())
+    model = modelBuilder.get_model()
     C,S,G  = modelBuilder.get_train_data()
     for i in range(1, args.numepochs+1):
-        loss, grads = modelBuilder.compute_loss_and_grads(C,S,G)
+        loss, grads = modelBuilder.compute_loss_and_grads(model, C,S,G)
         opt.apply_gradients([(grads, G)])
         if i % 100 == 0:
             logger.info("Iteration: %d, Loss: %.2f" % (i,loss))
-            modelBuilder.save_generated_img(G.numpy(), i)
-    # callbacks = modelBuilder.get_callbacks(model)
-    # init_epoch = 0
-    # history = model.fit(X, Y,
-    #            epochs=args.numepochs,
-    #            steps_per_epoch=1,
-    #            initial_epoch=init_epoch,
-    #            callbacks=[])
-    # modelBuilder.save_generated_img(G.numpy(), args.numepochs)
-    # logger.info(history.history)
+            modelBuilder.save_generated_img(snapdir, G.numpy(), i, timestamp)
 
 
 def parse_args():

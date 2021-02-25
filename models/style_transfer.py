@@ -167,9 +167,9 @@ class StyleTransferBuilder():
         style_img = add_batch_dim(style_img)
         return content_img, style_img, gen_img
 
-    def save_generated_img(self, image_matrix, epoch, timestamp):
+    def save_generated_img(self, snapdir, image_matrix, epoch, timestamp):
         image_matrix = image_matrix[0,:,:,:]
-        img_path = os.path.join(self.datadir, "gen_image_%d_%d.jpg" % (timestamp,epoch))
+        img_path = os.path.join(snapdir, "gen_image_%d_%d.jpg" % (timestamp,epoch))
         cv2.imwrite(img_path, image_matrix)
 
     def get_callbacks(self, model):

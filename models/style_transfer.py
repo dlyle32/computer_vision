@@ -61,7 +61,8 @@ def read_and_resize_img(path, nh, nw):
     return img
 
 class ImageGen(keras.layers.Layer):
-    def __init__(self, nh, nw, nc, **kwargs): super(ImageGen,self).__init__(**kwargs)
+    def __init__(self, nh, nw, nc, **kwargs):
+        super(ImageGen,self).__init__(**kwargs)
         self.nh = nh
         self.nw = nw
         self.nc = nc

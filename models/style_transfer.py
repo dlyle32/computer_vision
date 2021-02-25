@@ -90,8 +90,8 @@ class StyleTransferBuilder():
         self.datadir = args.datadir
         self.contentpath = args.content_img
         self.stylepath = args.style_img
-        self.nh = 512
-        self.nw = 512
+        self.nh = args.imgheight
+        self.nw = args.imgwidth
         self.nc = 3
         self.vgg = VGG16(include_top=False)
 

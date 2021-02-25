@@ -94,6 +94,8 @@ def parse_args():
     parser.add_argument("--style_factor", type=float, default=0.5)
     parser.add_argument("--content_img", type=str, default="data/content.jpg")
     parser.add_argument("--style_img", type=str, default="data/style.jpg")
+    parser.add_argument("--imgwidth", type=int, default=224)
+    parser.add_argument("--imgheight", type=int, default=224)
 
     return parser.parse_args()
 
